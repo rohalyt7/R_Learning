@@ -1,0 +1,419 @@
+---
+title: "OLS Assumption Testing"
+author: "Thomas Rohaly"
+format: html
+toc: true
+code-fold: show
+theme: cosmo
+editor: visual
+---
+
+# Introduction
+
+# Load Packages
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(psych)
+library(ggpubr)
+library(car)
+library(lme4)
+library(performance)
+library(here)
+```
+
+We are also going to be using some custom functions that were generated for a different project to actually simulate our data. These functions give more flexibility compared to the simstudy package at the cost of not being quite as clean or extending beyond their explicit functionality.
+
+```{r, warning=FALSE}
+source(here("source", "Data_Simulation.R"))
+```
+
+# Simulating Data
+
+-   **Psych Data:** Static measures (STAIT, PCLM) and Group assignment for 30 participants.
+
+-   **Behavioral Data:** 50 trials per participant, including metrics like Reaction Time (RT), velocity, and occlusion.
+
+```{r}
+data <- generate_data(subj_n = 30,  # How many people we want
+                      trial_n = 50, # Number of repeated measures
+                      ICC = 0.2)    # ICC value for the dataset
+head(data)
+```
+
+# Normality of the Data
+
+Testing the Normality of Data involves checking if the distribution of your raw scores follows a bell-shaped curve. We check this primarily to determine if a linear model—which assumes a symmetric spread of errors—is the most appropriate way to describe the underlying behavioral patterns or if the data requires a transformation (or a different model selected). While a large sample size often protects the validity of your p-values via the Central Limit Theorem using heavily skewed raw data in a standard OLS regression can lead to poor model fit and inaccurate individual-level predictions. Consequently, failing to account for non-normal data may result in a model that is systematically "wrong" for certain ranges of your participants, even if the overall group averages appear statistically significant.
+
+## Skewness & Kurtosis
+
+Before running a formal test, we look at the "shape" of our data using descriptive statistics.
+
+-   **Skewness:** Measures symmetry. A right-skewed RT distribution (typical in psychology) will have a positive value.
+
+-   **Kurtosis:** Measures "tailedness." High kurtosis means more extreme outliers than a normal distribution.
+
+### Broad Descriptive Overview
+
+```{r}
+# We start by selecting our key variables:
+data_num <- data %>% 
+  dplyr::select(RT, distance, STAIT, PCL)
+
+# Using describe from the psych package
+describe(data_num, ranges = FALSE) #We do not need the table to include ranges
+```
+
+### Group Specific Diagnostics
+
+```{r}
+# now using describeBy in the psych package
+# Allows us to check distributional properties of each group separately 
+describeBy(data[, c('RT', 'STAIT', 'PCL')], group = data$group, ranges = FALSE)
+```
+
+## Visual Inspection
+
+Numbers like skewness are helpful, but "seeing" the data is usually more intuitive.
+
+### Histograms
+
+In our simulated data, we expect to see that "Gamma" tail for Reaction Time.
+
+```{r}
+# Histogram with Density Overlay
+ggplot(data, aes(x = RT)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 bins = 20, fill = 'steelblue', alpha = 0.75) +
+  #facet_wrap(~ group) + # You can include this is you want to look at group separately
+  theme_minimal() +
+  labs(title = 'Distribution of Reaction Time', y = 'Density')
+```
+
+### QQ Plots
+
+We look for the data points to fall along the diagonal line. Given that RT was generated using a Gamma distribution, we should see a concave curve in the data.
+
+```{r}
+ggqqplot(data, "RT") + 
+  #facet_wrap(~ group) + # You can include this is you want to look at group separately
+  labs(title = "Normality Check: RT Quantile-Quantile Plot")
+```
+
+## Formal Testing
+
+### Shapiro-Wilk Test
+
+The Shapiro-Wilk test provides a formal p-value for normality.
+
+-   **Null Hypothesis (**H0​): The sample data comes from a normal distribution.
+
+-   **Interpretation:** If p\<.05, the sample data does not come from a normal distribution.
+
+```{r}
+shapiro.test(data$RT)
+```
+
+### Sample Size Trap in Normality Testing
+
+The Shapiro-Wilk test is extremely sensitive to sample size. In small samples (N\<50), it may fail to detect non-normality; in large samples (like our N=1500), it will likely flag trivial deviations as "statistically significant".
+
+Because of this, always prioritize QQ Plots and Density Plots when making decisions. If the visual distribution looks approximately normal and the points follow the QQ diagonal, the model is often robust enough to proceed, even if the Shapiro-Wilk test "fails".
+
+## When Normality Fails
+
+If you have determined that the sampling distribution of your data is non-normal you have a few options:
+
+-   **Transform:** Apply a (e.g., `log(RT))` to normalize the distribution.
+
+-   **Non-Parametric:** Use a test that doesn't assume normality (e.g., Mann-Whitney U instead of a T-test).
+
+-   **Change the Model:** Use a framework, like Generalized Linear Model (GLM), that expects skewed data (like Gamma).
+
+# Normality of Residuals
+
+While Normality of the Data above checks our assumptions about the shape of our raw data, this looks at the model's behavior. In OLS regression and ANOVA, we aren't actually required to have normally distributed *data*; we are required to have normally distributed *errors* (residuals). Checking this tells you if your model is missing a systematic pattern or if the "noise" in your study is truly random.
+
+```{r}
+# 1. Fit the ANOVA model
+# We use RT as our outcome and group as our predictor
+anova_model <- aov(RT ~ group, data = data)
+summary(anova_model)
+
+# 2. Extract the residuals
+# These are the differences between the actual RT and the group mean
+resids <- residuals(anova_model)
+```
+
+```{r}
+# 3. Visualize the Errors
+ggplot(as.data.frame(resids), aes(x = resids)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 bins = 20, 
+                 colour = 'darkslategray', 
+                 fill = 'steelblue', 
+                 alpha = 0.75) +
+  geom_density(color = "red", linewidth = 1) + # Adding a density line for clarity
+  theme_minimal() +
+  labs(
+    title = 'Distribution of Model Residuals (Errors)',
+    subtitle = 'Checking for a bell-shaped curve in the "leftover" variance',
+    x = 'Residual Value',
+    y = 'Density'
+  )
+```
+
+When you checked the **raw data**, you saw the skew of the entire participant pool. When you check the **residuals**, you are looking at the distribution of scores *after* accounting for the fact that some people are "Experienced" and others are "Non-Experienced."
+
+-   **If residuals are normal:** Your model has successfully captured the main signal, and the remaining "noise" is random.
+
+-   **If residuals are still skewed:** Even after accounting for "Experience," your model is still systematically failing to explain the data. This is your final cue to move to a **Gamma** or **Log-linear** framework.
+
+# Homogeneity of Variance (Homoscedasticity)
+
+Homogeneity of variance (or homoscedasticity) assumes that the "spread" of your data is roughly equal across all levels of your predictor variables. In our case, we are checking if the variance in Reaction Time is the same for "Experienced" and "Non-Experienced" participants.
+
+**Why we check it:** OLS regression uses a single "pooled" estimate of variance to calculate the standard error. If your groups have wildly different variances, that single estimate will be too large for one group and too small for the other, leading to "False Positives" (Type I errors) or "False Negatives" (Type II errors).
+
+### **1. Formal Testing: Levene's Test**
+
+Unlike the Shapiro-Wilk test for normality, **Levene's Test** is robust even if the underlying data is not perfectly normal.
+
+-   **Null Hypothesis (**$H_0$): Variances are equal across groups.
+
+-   **Interpretation:** A significant result ($p < .05$) indicates that the assumption of homogeneity has been violated (heteroscedasticity).
+
+```{r}
+# Levene's Test for RT across Experience Groups
+# Using the median (default) is more robust to outliers
+leveneTest(RT ~ group, data = data)
+
+# Alternatively, using the mean
+leveneTest(RT ~ group, data = data, center = mean)
+```
+
+### **2. Visual Inspection: Jittered Boxplots**
+
+While Levene's test gives you a $p$-value, a "Jitter Plot" allows you to see the actual density of the spread. This helps determine if the violation is caused by a few extreme outliers or a fundamental difference in how the groups perform.
+
+```{r}
+# Visualizing Variance Spread
+ggplot(data, aes(x = group, y = RT, fill = group)) +
+  geom_boxplot(alpha = 0.3, outlier.shape = NA) + # Hide outliers to focus on the bulk spread
+  geom_jitter(width = 0.2, alpha = 0.2, color = "black") +
+  theme_minimal() +
+  labs(
+    title = 'Variance in Reaction Time Across Groups',
+    subtitle = 'Are the "clouds" of data points roughly the same height?',
+    x = 'Experience Group',
+    y = 'Reaction Time (s)'
+  ) +
+  guides(fill = "none")
+```
+
+### **3. Scale-Location Plot**
+
+In a formal regression analysis, we often use the **Scale-Location (Spread-Level) plot**. This plots the square root of the standardized residuals against the fitted values.
+
+```{r}
+# Fit our simple model
+model_1 <- lm(RT ~ group, data = data)
+
+# Extract standardized residuals
+data$std_resids <- sqrt(abs(rstandard(model_1)))
+data$fitted <- fitted(model_1)
+
+# 1. Prepare Diagnostic Data
+diag_data <- data %>%
+  mutate(
+    resids = residuals(lm(RT ~ group, data = .)),
+    std_resid_sqrt = sqrt(abs(resids / sd(resids))), # Scale-Location transformation
+    fitted = fitted(lm(RT ~ group, data = .))
+  )
+
+# 2. Create the Publication-Ready Diagnostic
+ggplot(diag_data, aes(x = group, y = std_resid_sqrt)) +
+  # Jitter shows the density/height of the variance
+  geom_jitter(aes(color = group), width = 0.2, alpha = 0.3) + 
+  # Stat_summary creates the 'Red Line' by connecting group means
+  stat_summary(fun = mean, geom = "line", aes(group = 1), color = "red", linewidth = 1) +
+  stat_summary(fun = mean, geom = "point", color = "red", size = 3) +
+  labs(
+    title = "Scale-Location Diagnostic (Categorical Predictor)",
+    subtitle = "The red line connects group mean errors; vertical height shows variance spread",
+    x = "Experience Group",
+    y = "sqrt(|Standardized Residuals|)"
+  ) +
+  theme_minimal() +
+  guides(color = "none")
+```
+
+**How to read it:** You want to see a horizontal line with an equally spread "cloud" of points. If the line slopes upward or the cloud looks like a "funnel" (getting wider as you go right), you have **Heteroscedasticity**.
+
+We can do the same with continuous predictors
+
+```{r}
+# 1. Fit a model with a continuous predictor
+cont_model <- lm(RT ~ STAIT, data = data)
+
+# 2. Extract diagnostics
+diag_cont <- data %>%
+  mutate(
+    resids = residuals(cont_model),
+    std_resid_sqrt = sqrt(abs(resids / sd(resids))),
+    fitted = fitted(cont_model)
+  )
+
+# 3. Plot for Continuous Data
+ggplot(diag_cont, aes(x = fitted, y = std_resid_sqrt)) +
+  geom_point(alpha = 0.2) + # Low alpha is CRITICAL for 1500 points
+  geom_smooth(method = "loess", color = "red") + # 'loess' fits a flexible trend line
+  labs(
+    title = "Scale-Location Plot (Continuous Predictor)",
+    subtitle = "Looking for a horizontal red line and a consistent 'cloud' width",
+    x = "Fitted Values (Predicted RT)",
+    y = "sqrt(|Standardized Residuals|)"
+  ) +
+  theme_minimal()
+```
+
+## When Homogeneity Fails
+
+If your $p$-value is significant and your plots show a "funnel" shape:
+
+1.  **Transform the outcome:** A log-transformation often "squeezes" the variance and fixes the issue.
+
+2.  **Use Robust Standard Errors:** Use the `sandwich` package to calculate "Heteroscedasticity-Consistent" standard errors.
+
+3.  **Weighted Least Squares (WLS):** Tell the model to give less "weight" to the noisier group.
+
+# Independence of Observations
+
+This assumption is arguably the most critical in psychological and behavioral data research. Standard OLS regression assumes that each data point is independent—meaning the reaction time for Trial 10 has no relationship with the reaction time for Trial 9.
+
+In your dataset, this assumption is likely violated in two ways:
+
+1.  **Temporal Autocorrelation:** A participant’s speed on one trial often predicts their speed on the next (fatigue or practice effects).
+
+2.  **Clustering (Nested Data):** Trials are "nested" within subjects. Trials from the same person will naturally be more similar to each other than to trials from a stranger.
+
+## Durbin-Watson Test (Autocorrelation)
+
+This test checks for **serial correlation** (errors that are correlated across time). In your `behavioral_long` data, where you have 50 trials per person, this is a vital check.
+
+-   **Values (D-W Statistic) near 2:** Indicate no autocorrelation.
+
+-   **Values \< 1 or \> 3:** Indicate a violation that might require a specialized time-series model or a "Lag" variable.
+
+```{r}
+# Testing for the temporal independence in RT
+# We will use a model where we predict RT from our main predictors
+
+model_ind <- lm(RT ~ group + STAIT, data = data)
+durbinWatsonTest(model_ind)
+```
+
+## Intraclass Correlation (ICC)
+
+The ICC is the "Gold Standard" for determining if you need a **Multilevel Model (HLM/LMM)**. It measures how much of the total variance in your outcome (RT) is due to differences *between* individuals versus differences *within* individuals across trials.
+
+The `performance` package is the current industry standard for reporting ICC values and very easy to use.
+
+```{r}
+# 1. Fit the Intercept-Only (Null) Model.
+# We will let the intercept vary by our Subject ID as well here
+intercept_full <- lmer(RT ~ 1 + (1 | ID),
+                       data = data,
+                       REML = FALSE)
+
+# 2. Extract the ICC and print
+icc_results <- performance::icc(intercept_full)
+print(icc_results)
+```
+
+"If your ICC is high (e.g., \> 0.10), it means a significant portion of the variance is tied to the individual. In this case, a standard OLS regression is **inappropriate** because it ignores the 'nesting' of trials within people, leading to overconfident $p$-values. This is our bridge into **Mixed-Effects Modeling**.
+
+## Formal Significance: Likelihood Ratio Test (LRT)
+
+The Likelihood Ratio Test (LRT) allows us to objectively decide between a simple OLS regression and a Multilevel Model. By comparing the 'Log-Likelihood' of a model that ignores subject-level nesting to one that accounts for it, we can determine if the added complexity is statistically justified. If the resulting Chi-Square test is significant, it confirms that observations within a subject are correlated, necessitating the use of Mixed-Effects modeling to avoid Type-I error inflation.
+
+```{r}
+# Restricted model (simple OLS)
+intercept_rest <- lm(RT ~ 1, data = data)
+
+# LRT
+# Comparing the model with Subject-level variance to the model without
+anova(intercept_full, intercept_rest)
+
+#Note: using anova() on lmer vs lm objects automatically performs the LRT
+```
+
+#### **What to look for in the output:**
+
+1.  **The p-value (**$Pr(>Chisq)$):
+
+    -   **Significant (**$p < .05$): The "Complex" model (`lmer`) is a significantly better fit. You **must** use a Mixed-Effects model because the subjects differ from one another enough to bias a standard regression.
+
+    -   **Non-Significant (**$p > .05$): The "Simple" model (OLS) is sufficient. There isn't enough variation between subjects to justify the more complex math.
+
+2.  **AIC and BIC:** These are "Information Criteria." **Lower values are better.** If the `lmer` model has a lower AIC than the `lm` model, it is the preferred model.
+
+3.  **logLik:** This is the "Log-Likelihood." The LRT specifically tests the difference between the logLik of the two models. A larger (less negative) logLik indicates a better fit to the data.
+
+## When Independence Fails
+
+If your diagnostic tests (Durbin-Watson or ICC) indicate that your observations are not independent, you can no longer trust the standard errors or $p$-values from a basic OLS regression. You must choose a model that explicitly accounts for the "clustering" or "nesting" in your data.
+
+If your data violates the independence assumption, your $p$-values will likely be "inflationary" (too small), leading to false discoveries. Depending on your research goals, consider these alternatives:
+
+-   **Multilevel Models (HLM/LMM):** The "Gold Standard" for nested data. These models add "Random Effects" to account for the fact that trials within a person are related.
+
+-   **Clustered Standard Errors:** Instead of changing the model, you "adjust" the standard errors to be more conservative, accounting for the lack of independence.
+
+-   **Generalized Estimating Equations (GEE):** Best for when you care about the "average" population effect but want to control for the correlation within subjects.
+
+-   **Fixed Effects Models:** Useful in experimental designs where you subtract out the "Subject Mean" to focus entirely on how a variable changes *within* a person.
+
+# Multicolinearity
+
+Multicollinearity occurs when two or more of your independent variables (predictors) are highly correlated with each other. In a "perfect" world, every predictor in your model would provide unique, independent information to explain the variance in Reaction Time (RT).
+
+When predictors are redundant (e.g., two different scales measuring nearly the same type of anxiety), the OLS model struggles to "assign credit" to the correct variable. This makes your coefficients unstable and your $p$-values unreliable.
+
+### **How we test it: Variance Inflation Factor (VIF)**
+
+We use the **VIF** to measure how much the variance of an estimated regression coefficient is "inflated" due to collinearity with other predictors in the model.
+
+```{r}
+# Fit a model with our redundant predictors
+vif_model <- lm(RT ~ STAIT + PCL + distance + Weapon_vel + group, data = data)
+
+# Calculate VIF
+vif(vif_model)
+```
+
+Note: We are seeing large VIF values for STAIT and PCL here because we set the correlation between them to be 0.95 at the between subjects level.
+
+### **Interpreting the VIF Output**
+
+When you look at your results, focus on the VIF values for each variable:
+
+|  |  |  |
+|------------------------|------------------------|------------------------|
+| **VIF Value** | **Interpretation** | **Status** |
+| **\~ 1.0** | No correlation between this predictor and others. | **Ideal** |
+| **1.0 – 5.0** | Moderate correlation; common in behavioral data. | **Acceptable** |
+| **\> 5.0** | High correlation; coefficients are becoming unstable. | **Warning** |
+| **\> 10.0** | Severe multicollinearity; the model is likely broken. | **Violation** |
+
+### **What if Multicollinearity is Violated?**
+
+If you find a VIF score above 5 or 10, you cannot simply ignore it and report the $p$-values. You have three primary ways to fix the issue:
+
+1.  **Remove a Predictor:** This is the most common solution. If `STAIT` and `PCLM` are redundant, choose the one that is most theoretically relevant to your research question and drop the other.
+
+2.  **Create a Composite Score:** If both variables are important, you can average them together (e.g., `(STAIT + PCLM) / 2`) to create a single "Distress" index. This captures the shared information without the mathematical redundancy.
+
+3.  **Principal Component Analysis (PCA):** For more advanced models, you can use PCA to mathematically collapse multiple correlated variables into a single "Factor" or "Component."
+
+4.  **Increase Sample Size:** While not always possible, sometimes very large samples can help a model distinguish between highly correlated effects (though the underlying redundancy remains).

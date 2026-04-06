@@ -1,0 +1,663 @@
+---
+title: "Data Manipulation"
+author: "Thomas Rohaly"
+format: html
+toc: true
+code-fold: show
+theme: cosmo
+editor: visual
+---
+
+# Introduction
+
+This tutorial provides a side-by-side comparison of **Base R** and **Tidyverse** approaches to data manipulation. We will work with a simulated dataset common in behavioral research: a "Between-Subjects" psychological profile and a "Within-Subjects" (repeated measures) behavioral log.
+
+# Load packages
+
+```{r}
+library(tidyverse)
+library(simstudy)
+```
+
+# Simulate Datasets
+
+-   **Psych Data:** Static measures (STAIT, PCLM) and Group assignment for 30 participants.
+
+-   **Behavioral Data:** 50 trials per participant, including metrics like Reaction Time (RT), velocity, and occlusion.
+
+> **Note:** While we show how to simulate data quickly with Base R, we use the `simstudy` package to create realistic distributions, such as a skewed Gamma distribution for Reaction Time and a Poisson distribution for shot counts.
+
+## Base R
+
+```{r}
+#Set up basic values
+set.seed(222)
+n_subs <- 30
+n_trials <- 50
+total_rows <- n_subs * n_trials
+
+# 1. Create Psych Data
+psych_data_base <- data.frame(
+  ID = 1:n_subs,
+  STAIT = runif(n_subs, 20, 80),
+  PCLM = runif(n_subs, 10, 50),
+  Group = sample(c("Non-Experienced",
+                   "Experienced"), 
+                 n_subs, replace = TRUE)
+)
+
+# 2. Create Behavioral Data (Repeated Measures)
+behavioral_data_base <- data.frame(
+  ID = rep(1:n_subs, each = n_trials),
+  Time = rep(1:n_trials, times = n_subs),
+  distance = runif(total_rows, 0, 500),
+  weapon_vel = rnorm(total_rows, 5, 1),
+  head_vel = rnorm(total_rows, 6, 1.2),
+  type = sample(0:1, total_rows, replace = TRUE),
+  RT = rexp(total_rows, rate = 2) + 0.2, #Reaction time, exponential + offset
+  shots = rpois(total_rows, lambda = 3), #count data, shots fired
+  occlusion = rbeta(total_rows, 2, 5) * 100 #percentage, beta distribution
+  
+)
+head(behavioral_data_base)
+```
+
+## Simstudy package
+
+```{r}
+set.seed(222)
+
+# 1. Psych Data
+defP <- defData(varname = "STAIT", formula = "50", variance = 225, dist = "normal") #Mean 50, SD = 15
+defP <- defData(defP, varname = "PCLM", formula = "30", variance = 100, dist = "normal")
+defP <- defData(defP, varname = "group", formula = "0.5", dist = "binary") #0, 1 grouping
+
+psych_data <- genData(30, defP) %>% 
+  mutate(group = ifelse(group == 0, "Non-Experienced", "Experienced")) %>% 
+  rename("ID" = 'id')
+```
+
+```{r}
+# 2. Behavioral Data
+# Create a blank data frame with 30 subjects
+behavioral_base <- genData(30)
+
+# Expand to 50 trials per subject.
+behavioral_long <- addPeriods(behavioral_base,
+                              nPeriods = 50,
+                              idvars = "id")
+
+# Now we define the repeated measures
+defR <- defDataAdd(varname = "distance", formula = 250, variance = 5000, dist = "normal")
+defR <- defDataAdd(defR, varname = "Weapon_vel", formula = 5, variance = 1, dist = "normal")
+defR <- defDataAdd(defR, varname = "Head_vel", formula = 6, variance = 1.4, dist = "normal")
+defR <- defDataAdd(defR, varname = "RT", formula = 0.5, variance = 0.2, dist = "gamma") # Skewed RT
+defR <- defDataAdd(defR, varname = "Shots", formula = 2.5, dist = "poisson")
+defR <- defDataAdd(defR, varname = "Occlusion", formula = 20, variance = 100, dist = "normal")
+defR <- defDataAdd(defR, varname = "Type", formula = 0.5, dist = "binary")
+
+# Use addColumns to fill in the data frame
+behavioral_data <- addColumns(defR, behavioral_long) %>% 
+  rename(ID = id,
+         Time = period,
+         Row_num = timeID)
+
+#Quick View
+head(behavioral_data)
+```
+
+# Merging Datasets
+
+**The Concept:** In behavioral research, data is often siloed—subject demographics in one file and trial-level logs in another. Merging is the process of joining these tables into a single "Master" dataset so that participant traits (like anxiety scores) can be analyzed alongside their performance (like reaction time).
+
+## Base R
+
+**Base R (`merge`):** This approach uses a traditional relational database logic. By setting `all.x = TRUE`, we ensure that every row in our primary behavioral file is preserved, even if a participant’s psychological data is missing.
+
+```{r}
+#Base R
+data_base <- merge(behavioral_data, psych_data,
+                   by = "ID", all.x = TRUE)
+
+#all.x makes sure that we keep all rows from the first/left dataframe.
+```
+
+## Tidyverse
+
+**Tidyverse (`left_join`):** This is the more modern, "piped" approach. It is designed to be readable as a sentence: "Take the behavioral data, then join the psych data by ID." It is particularly helpful when the ID columns have different names in each file.
+
+```{r}
+#Tidyverse 
+data <- behavioral_data %>% 
+  left_join(psych_data, by = ('ID'))
+```
+
+Regardless of which method you use, you will want to check and make sure that the expected number of columns and rows are generated. There are many ways in which merges create unexpected data, so you always want to check things after the fact.
+
+One important note is that if the variable you are merging on (e.g., ID) have different names between datasets, we can address that with the left_join method by using:\
+group_by = c("ID" = "Subject_ID")
+
+We will be going over all of these concepts in this document, but the following is an example of a quick validation check you can run on newly merged data.
+
+```{r}
+data_check <- data %>% 
+  group_by(group) %>% 
+  summarize(Total_Trials = n(),
+            Unique_Participants = n_distinct(ID))
+data_check
+```
+
+So no we can verify both the number of trials and participants as well as how they're distributed across our grouping variable.
+
+# Pivoting: Reshaping Your Data
+
+Data typically exists in one of two structures: **Wide** or **Long**.
+
+-   **Wide Format:** Each participant has a single row. Experimental conditions, time points, or different test scores (like `STAIT` and `PCLM`) are spread across multiple columns.
+
+-   **Long Format:** Each row represents a single observation or event. Categorical variables are used to label these records. This "Tidy" format is the standard for `ggplot2` and most modern statistical modeling in R.
+
+## Base R
+
+In Base R, we use the `reshape()` function. While the syntax is more technical, it is a powerful, built-in tool that requires no external packages.
+
+Below, we take our **Psych dataset** (Wide) and collapse the separate `STAIT` and `PCLM` columns into a single `Score` column with a `Test_Type` label.
+
+```{r}
+# Base R Wide to Long example
+psych_long_base <- reshape(as.data.frame(psych_data), 
+                           varying = c("STAIT", "PCLM"), 
+                           v.names = "Score",
+                           timevar = "Test_Type",
+                           times = c("STAIT", "PCLM"),
+                           direction = "long")
+```
+
+Conversely, we can take trial-level data and spread it out. In this example, we calculate the mean `RT` for each response `Type` and move them into separate columns so each participant has one row.
+
+```{r}
+summary_long <- aggregate(RT ~ ID + Type, data = data, FUN = mean)
+
+# Reshape from Long to Wide
+summary_wide_base <- reshape(
+  summary_long,
+  idvar = "ID",  # the unique identifier for each row
+  timevar = "Type",  # col that will become the new column names
+  direction = "wide"
+  )
+
+head(summary_wide_base)
+```
+
+**Result:** We now have `RT.0` and `RT.1`, representing the mean reaction time for each participant across different response types.
+
+## Tidyverse
+
+The Tidyverse uses `pivot_longer()` and `pivot_wider()`. These functions are generally preferred for their intuitive naming and readability.
+
+#### **Using `pivot_longer()`**
+
+To plot `STAIT` and `PCLM` side-by-side in a boxplot, we must first pivot them into a long format.
+
+```{r}
+psych_long <- psych_data %>% 
+  pivot_longer(
+    cols = c(STAIT, PCLM), # list the cols we want to combine
+    names_to = "Test_Type", # a new col with labels
+    values_to = "Score", # a new col with values
+  )
+
+head(psych_long)
+```
+
+Once the data is "Long," we can map the `Test_Type` to our x-axis and the `Score` to our y-axis in a single command.
+
+```{r}
+ggplot(psych_long, aes(x = Test_Type, y = Score, fill = Test_Type)) +
+  geom_boxplot()
+```
+
+#### **Using `pivot_wider()`**
+
+While `pivot_longer()` is great for plotting, `pivot_wider()` is used when you need to "spread" data out. For example, if you want a single row for each participant that shows their average Reaction Time for **Type 0** vs. **Type 1** trials in two separate columns, you would use this approach:
+
+```{r}
+# 1. Create a subject-level summary (Long)
+subject_summary_long <- data %>%
+  group_by(ID, Type) %>%
+  summarize(mean_RT = mean(RT, na.rm = TRUE)) %>%
+  ungroup()
+
+# 2. Reshape from Long to Wide
+subject_wide <- subject_summary_long %>%
+  pivot_wider(
+    names_from = Type,       # The column providing the new headers
+    values_from = mean_RT,   # The column providing the data values
+    names_prefix = "Type_"   # Optional: adds a prefix to the new column names
+  )
+
+head(subject_wide)
+```
+
+**Result:** Instead of multiple rows per person, we now have a clean, one-row-per-ID table with specific columns for `Type_0` and `Type_1`.
+
+### **Pivoting Summary**
+
+-   **Use `pivot_longer()`** when you have multiple columns of the same measurement (like different test scores) and you need them in one column for a plot or a model.
+
+-   **Use `pivot_wider()`** when you need to transform trial-level data into a summary table where each condition has its own dedicated column.
+
+# Pick Columns
+
+Raw datasets are often cluttered with technical indices or unneeded variables. Selection is the process of "narrowing the field" to only the variables relevant to your specific hypothesis, making the data easier to view and faster to process.
+
+## Base R
+
+**Base R (Square Brackets):** Base R uses the `[rows, columns]` convention. To select columns, we leave the "rows" side blank and provide a character vector of the names we want in the "columns" side.
+
+\$ let's us return the object as a vector
+
+```{r}
+head(data$RT)
+```
+
+using the \["RT"\] method to get a dataframe with a single column
+
+```{r}
+head(data[, 'RT'])
+```
+
+We can also select multiple columns by passing a character vector.
+
+```{r}
+head(data[, c('RT', 'Shots', 'Occlusion')])
+```
+
+This can also be used to drop columns we don't want anymore.
+
+Drop one column
+
+```{r}
+X <- as.data.frame(data)[ , names(data) != "Row_num"]
+head(X)
+```
+
+We can also drop multiple columns
+
+```{r}
+X <- as.data.frame(data)[ , !names(data) %in% c("Row_num", "PCLM")]
+head(X)
+```
+
+## Tidyverse
+
+**Tidyverse (`select`):** The `select()` function provides a more intuitive way to grab columns without using quotes. It also includes "helpers" that allow you to grab columns based on patterns, such as all variables that `starts_with()` a certain letter or those that are a specific data type (e.g., `is.numeric`).
+
+```{r}
+data %>% 
+  select(ID, group, RT, Shots, Occlusion)
+```
+
+Utilizing the `starts_with()` helper function:
+
+```{r}
+#Selecting all variables that start with STAIT or PCLM
+data %>% 
+  select(ID, starts_with('STAIT'), starts_with('PCLM'))
+```
+
+Utilizing the `where(is.numeric)` helper function:
+
+```{r}
+#Selects all variables that are numeric and ID
+data %>% 
+  select(ID, where(is.numeric))
+```
+
+Finally, we can also select all variable except for explicitly stated ones (e.g., you want all variables but one)
+
+```{r}
+data %>% 
+  select(-Row_num)
+```
+
+```{r}
+data %>% 
+  select(-c(Row_num, PCLM))
+```
+
+# Picking Rows (Filtering)
+
+**The Concept:** Filtering is how we define our study's inclusion and exclusion criteria. It allows us to "zoom in" on specific groups (e.g., only "Experienced" participants) or remove data points that don't meet our quality standards (e.g., extreme outliers).
+
+## Base R
+
+**Base R (Logical Indexing):** This method asks R to evaluate a TRUE/FALSE question for every row. Only the rows that return TRUE are kept. Note that you must repeat the name of the dataframe for every condition (e.g., `df$Group == "X"`).
+
+```{r}
+data[data$group == 'Experienced', ]
+```
+
+The comma is included here because we are filtering for rows that meet our condition. This will run the same way if you ignore the comma, as that is how R interprets it, but it is better etiquette to be specific. Let's look at another example, but now we are going to filter based on multiple conditions instead of just one.
+
+```{r}
+data[data$group == 'Experienced' & data$STAIT >= 35, ]
+```
+
+We can also be a bit more complicated, lets say we are interested only in the tails of our reaction time data. we can filter so that we only see the top or bottom 2.5% of RT.
+
+```{r}
+data[data$RT <= quantile(data$RT, probs = 0.025) | data$RT >= quantile(data$RT, probs = 0.975), ]
+```
+
+## Tidyverse
+
+**Tidyverse (`filter`):** The `filter()` function streamlines this by allowing you to list multiple conditions separated by commas. It also works seamlessly with the `%in%` operator, which is a massive time-saver when you need to filter for a specific list of IDs.
+
+```{r}
+data %>% 
+  filter(
+    group == 'Experienced',
+    STAIT >= 35
+  )
+```
+
+The RT example is very similar to the base R version by itself. However, we can take that example and add other filters much more easily.
+
+```{r}
+data %>% 
+  filter(
+    RT <= quantile(data$RT, probs = 0.025) | RT >= quantile(data$RT, probs = 0.975),
+    group == 'Experienced', 
+    Type == 1
+  )
+```
+
+Another great functionality is the %in% function. We can use this to select all conditions from a list instead of listing them out separately. For example, let's say we have a few individuals that we want to look at in separation, we don't have to list all of them out with repeated OR statements, we can use %in%.
+
+```{r}
+ID_outliers <- c(1, 5, 8, 14)
+data %>% 
+  filter(
+    ID %in% ID_outliers
+  )
+```
+
+# Sort Rows
+
+**The Concept:** Sorting (or arranging) is a final step for organization. While it doesn't change the data values, it is crucial for verifying chronological order in time-series data or identifying the highest and lowest performers in your sample at a glance.
+
+## Base R
+
+**Base R (`order`):** This can be a bit counter-intuitive for beginners because you are essentially telling R to "re-order the row numbers" based on the values in a specific column.
+
+```{r}
+data[order(data$RT), ]
+```
+
+Any time you want to change from ascending to descending, you just add a "-" prefix to the specified variable.
+
+```{r}
+data[order(-data$RT), ]
+```
+
+Finally, we can arrange our data by multiple variables
+
+```{r}
+data[order(data$group, -data$RT), ]
+```
+
+## Tidyverse
+
+**Tidyverse (`arrange`):** This is a much more direct command. You simply tell R which columns to use for the sort. If you want to see the "fastest" or "highest" values first, you wrap the variable in the `desc()` helper function.
+
+```{r}
+data %>% 
+  arrange(
+    group, desc(RT)
+  )
+```
+
+here we use the desc() instead of "-" to indicate descending order. Otherwise, it is as simple as it seems!
+
+# Creating and Changing Columns (Mutation)
+
+**The Concept:** This is the heart of feature engineering. We often need to transform raw units (like seconds) into more readable ones (like milliseconds) or create new categorical labels based on performance thresholds.
+
+## Base R
+
+**Base R (`$` Assignment):** This is the classic way to add data. It is very fast for a single change, but can become wordy if you are adding five or six new columns, as each requires its own line of code and repeated dataframe names.
+
+```{r}
+#Converting distance from meters to kilometers
+data$distance_km <- data$distance / 1000
+
+#Calculating a ratio between head and weapon movement
+data$vel_ratio <- data$Head_vel / data$Weapon_vel
+```
+
+You can also create new variables if you want to do something like standardize a variable. For example, if we wanted to Z-score distance we could do below:
+
+```{r}
+data$distanceZ <- scale(as.numeric(data$distance))
+```
+
+we can also use the ifelse approach to create a binary variable
+
+```{r}
+data$high_occlusion <- data$Occlusion > 50
+```
+
+## Tidyverse
+
+-   **Tidyverse (`mutate`):** `mutate()` allows you to create many variables in a single "block." A unique "superpower" of this function is that you can create a new variable on line 1 and immediately use it to calculate something else on line 2.
+
+```{r}
+data <- data %>% 
+  mutate(
+  #First we can change RT to be in ms instead of sec
+  rt_ms = RT * 1000,
+
+  #Then we can use that to create fast/slow labels
+  performance = ifelse(rt_ms < 500, "Fast", "Slow"),
+
+  #Finally, we can create a flag for outliers
+  is_outlier = rt_ms <= quantile(rt_ms, 0.025) |
+    rt_ms >= quantile(rt_ms, 0.975) 
+  
+  )
+```
+
+-   **Complex Labels:** For more than two categories, use `case_when()` instead of nested `ifelse()` statements for better readability.
+
+```{r}
+data <- data %>% 
+  mutate(
+    occlusion_level = case_when(
+      Occlusion < 20 ~ "Low",
+      Occlusion < 60 ~ "Medium",
+      Occlusion >= 60 ~ "High",
+      TRUE ~ "Unknown" #A catch all else statement
+    )
+  )
+```
+
+# Collapse Data (Aggregation)
+
+**The Concept:** Aggregation is the process of moving from "Long" trial-level data to "Summary" subject-level results. This is how we calculate the final "Mean Reaction Time" or "Total Accuracy" used in your final statistical models and plots.
+
+## Base R
+
+**Base R (`aggregate`):** This uses "formula notation" (`DV ~ IV`), which is very familiar to anyone who has run a regression in R. It is highly efficient for simple tables.
+
+A single metric:
+
+```{r}
+subject_means <- aggregate(rt_ms ~ ID,
+                           data = data,
+                           FUN = mean)
+subject_means
+```
+
+In order to get multiple metrics, we will need to utilize the cbind function.
+
+Multiple metrics:
+
+```{r}
+subject_stats_base <- aggregate(cbind(rt_ms, distance, Occlusion) ~ ID + group,
+                        data = data,
+                        FUN = mean)
+subject_stats_base
+```
+
+## Tidyverse
+
+**Tidyverse (`group_by` + `summarize`):** This is the "Split-Apply-Combine" workflow. You **split** the data into participant clumps, **apply** a function like `mean()`, and **combine** them into a tidy summary table. It is incredibly flexible for generating complex reports with many different metrics at once.
+
+```{r}
+subject_summary <- data %>% 
+  group_by(ID, Type) %>% # What we stratify by
+  summarize(
+    mean_rt = mean(rt_ms, na.rm = TRUE),
+    total_distance = sum(distance), 
+    accuracy = mean(Shots),
+    trial_count = n() # Counts the number of rows per group
+  ) %>% 
+  ungroup() # A good habit, prevents issues with future manipulations
+
+subject_summary
+```
+
+## Notes
+
+There are a few notes to bear in mind for the Tidyverse functions.
+
+1.  The difference between summarize and mutate
+    1.  summarize reduces the number of rows
+    2.  mutate keeps all rows. If you used mean() inside of a mutate function for example, it would add the same mean value to every row for that group
+2.  Use summarize when you want a table of results for a report or plot.
+3.  Use mutate and group_by when you are comparing individual observations to a property of its group without losing the individual data.
+    1.  e.g., Mean centering; taking the Difference from Participant Mean for each RT record.
+
+# Example Questions:
+
+::: callout-note
+### Challenge 1: The Integration Join
+
+**Task:** Merge `behavioral_data` and `psych_data` into a new object called `study_df`. Ensure that every behavioral trial now includes the subject’s `Group`, `STAIT`, and `PCLM` scores.
+
+**Bonus:** Drop the `Time`column during this process.
+:::
+
+```{r}
+
+```
+
+::: callout-note
+### Question 2: Custom Metrics & Logic
+
+**Task:** Using `study_df`, create a new column called `speed_efficiency`. This should be calculated as `distance` divided by `RT`.
+
+-   **Next:** Create a second column called `efficiency_label`. If `speed_efficiency` is greater than the median of the entire dataset, label it `"High"`, otherwise label it `"Low"`.
+:::
+
+```{r}
+
+```
+
+::: callout-note
+### Question 3: The Grouped Outlier Check
+
+**Task:** We suspect some trials are "distracted" trials. Write a pipe that identifies trials where the `RT` is more than 3 Standard Deviations above **that specific participant's** mean `RT`.
+
+-   **Output:** Return a dataframe that only contains these "distracted" rows.
+:::
+
+```{r}
+
+```
+
+::: callout-note
+### Question 4: Wide-to-Long Transformation
+
+**Task:** Your coworkers want to see a boxplot comparing the distribution of `STAIT` vs `PCLM` scores.
+
+-   **Action:** Take the `psych_data` and pivot it so that the scores are in one column called `Score` and the test names are in a column called `Test_Type`.
+:::
+
+```{r}
+
+```
+
+::: callout-note
+### Question 5: The Grand Summary
+
+**Task:** Produce a final summary table that shows the following for each `Group` (Experienced vs. Non-Experienced):
+
+1.  The average `RT` (in milliseconds).
+
+2.  The total number of `shots` fired.
+
+3.  The percentage of trials that were `type` 1 (Hint: the mean of a 0/1 variable is its percentage).
+
+4.  The total number of unique participants in that group.
+:::
+
+```{r}
+
+```
+
+# Solutions
+
+## Solution 1
+
+```{r}
+# Tidyverse
+study_df <- behavioral_data %>%
+  left_join(psych_data, by = "ID") %>%
+  select(-Time)
+
+# Base R
+study_df_base <- merge(behavioral_data, psych_data, by = "ID", all.x = TRUE)
+study_df_base <- as.data.frame(study_df_base)[ , names(study_df_base) != "Time", drop = FALSE]
+```
+
+## Solution 2
+
+```{r}
+study_df <- study_df %>%
+  mutate(
+    speed_efficiency = distance / RT,
+    efficiency_label = ifelse(speed_efficiency > median(speed_efficiency, na.rm = TRUE), "High", "Low")
+  )
+```
+
+## Solution 3
+
+```{r}
+distracted_trials <- study_df %>%
+  group_by(ID) %>%
+  filter(RT > (mean(RT, na.rm = TRUE) + 3 * sd(RT, na.rm = TRUE))) %>%
+  ungroup()
+```
+
+## Solution 4
+
+```{r}
+psych_long <- psych_data %>%
+  pivot_longer(cols = c(STAIT, PCLM), names_to = "Test_Type", values_to = "Score")
+```
+
+## Solution 5
+
+```{r}
+final_summary <- study_df %>%
+  mutate(rt_ms = RT * 1000) %>%
+  group_by(group) %>%
+  summarize(
+    mean_rt_ms = mean(rt_ms, na.rm = TRUE),
+    total_shots = sum(Shots, na.rm = TRUE),
+    prop_type_1 = mean(Type, na.rm = TRUE),
+    n_subjects = n_distinct(ID)
+  )
+```

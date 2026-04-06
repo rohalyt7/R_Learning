@@ -1,0 +1,344 @@
+---
+title: "Basic Data Visualization"
+author: "Thomas Rohaly"
+format: html
+editor: visual
+---
+
+# Introduction
+
+Data visualization is the most powerful tool in a researcher's arsenal for both **Exploration** and **Communication**. Before running complex statistical models—like the Bayesian HLM or Machine Learning algorithms covered later in this series—we must first "look" at our data.
+
+In this module, we move beyond basic summary statistics to explore the "Grammar of Graphics" using the `ggplot2` ecosystem. We will utilize a high-fidelity simulated dataset that mirrors real-world behavioral and psychological research:
+
+-   **Psychological Traits:** Subject-level anxiety (STAIT) and trauma (PCL) measures.
+
+-   **Behavioral Metrics:** Trial-level performance data including Reaction Time (RT), velocity, and occlusion.
+
+Our goal is to progress from exploratory checks (detecting outliers and skewness) to publication-ready explanatory figures that clearly convey the relationship between performance and participant experience.
+
+# Loading Packages
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(simstudy)
+library(ggpubr)
+library(GGally)
+library(corrplot)
+```
+
+# Simulating Data
+
+-   **Psych Data:** Static measures (STAIT, PCLM) and Group assignment for 30 participants.
+
+-   **Behavioral Data:** 50 trials per participant, including metrics like Reaction Time (RT), velocity, and occlusion.
+
+```{r}
+set.seed(222)
+
+# 1. Psych Data
+defP <- defData(varname = "STAIT", formula = "50", variance = 225, dist = "normal") #Mean 50, SD = 15
+defP <- defData(defP, varname = "PCL", formula = "30", variance = 100, dist = "normal")
+defP <- defData(defP, varname = "group", formula = "0.5", dist = "binary") #0, 1 grouping
+
+psych_data <- genData(30, defP) %>% 
+  mutate(group = ifelse(group == 0, "Non-Experienced", "Experienced")) %>% 
+  rename("ID" = 'id')
+
+# View the first few rows
+head(psych_data)
+```
+
+```{r}
+# 2. Behavioral Data
+# Create a blank data frame with 30 subjects
+behavioral_base <- genData(30)
+
+# Expand to 50 trials per subject.
+behavioral_long <- addPeriods(behavioral_base,
+                              nPeriods = 50,
+                              idvars = "id")
+
+# Now we define the repeated measures
+defR <- defDataAdd(varname = "distance", formula = 250, variance = 5000, dist = "normal")
+defR <- defDataAdd(defR, varname = "Weapon_vel", formula = 5, variance = 1, dist = "normal")
+defR <- defDataAdd(defR, varname = "Head_vel", formula = 6, variance = 1.4, dist = "normal")
+defR <- defDataAdd(defR, varname = "RT", formula = 0.5, variance = 0.2, dist = "gamma") # Skewed RT
+defR <- defDataAdd(defR, varname = "Shots", formula = 2.5, dist = "poisson")
+defR <- defDataAdd(defR, varname = "Occlusion", formula = 20, variance = 100, dist = "normal")
+defR <- defDataAdd(defR, varname = "Type", formula = 0.5, dist = "binary")
+
+# Use addColumns to fill in the data frame
+behavioral_data <- addColumns(defR, behavioral_long) %>% 
+  rename(ID = id,
+         Time = period,
+         Row_num = timeID)
+
+# View the first few rows
+head(behavioral_data)
+```
+
+```{r}
+data <- behavioral_data %>% 
+  left_join(psych_data, by = ('ID'))
+```
+
+# Data Visualization
+
+**Note on Logic:** `ggplot2` works by stacking layers. We start with the **Data**, map variables to **Aesthetics** (like x, y, or color) , and then add **Geometries** (like points, lines, or bars). This modular approach allows us to build complex visualizations one piece at a time.
+
+## Basic Scatter Plot
+
+Alpha sets the amount of transparancy for each point. This is really helpful when plotting lots of data points together.
+
+```{r}
+# 1. Looking at Performance as a function of Anxiety scores.
+ggplot(data = data,
+       mapping = aes(x = STAIT, y = RT)) +
+  geom_point(alpha = 0.4)  
+```
+
+## Regression Plot
+
+We can add to this plot more to provide more information. Here we will add a regression line, using a simple linear model method. Additionally, we will increase readability by adding labels and titles to the graph as well as adding a theme for the background.
+
+```{r}
+ggplot(data = data,
+       mapping = aes(x = STAIT, y = RT)) +
+  geom_point(alpha = 0.3) + 
+  geom_smooth(method = 'lm', color = "red") + 
+  labs(
+    title = 'Impact of Trait Anxiety on Reaction Time',
+    subtitle = 'Linear regression indicating relationship between STAIT scores and RT',
+    x = 'STAIT Score (Anxiety)',
+    y = 'Reaction Time (seconds)'
+  ) +
+  theme_minimal()
+```
+
+When reading this graph now, we can more easily conclude that, while there does seem to be a slight negative relationship between STAIT scores and Reaction Time, we would probably not expect to see a statistically significant relationship.
+
+**Note:** Because we simulated the data and did not introduce specific relationships into the data, this is not an unexpected outcome.
+
+## Grouped Regression Plot
+
+We can take our Regression plot above now and group based on Experience level in order to also view potential group effects with our visualization.
+
+the color argument in the aes statement allows us to plot multiple colors based on the levels of a categorical variable.
+
+```{r}
+ggplot(data = data,
+       mapping = aes(x = STAIT, y = RT, color = group)) +
+  geom_point(alpha = 0.3) + 
+  geom_smooth(method = 'lm') + 
+  labs(
+    title = 'Anxiety and Performance by Experience Level',
+    x = 'STAIT Score',
+    y = 'Reaction Time (s)',
+    color = 'Experience Group'
+  )
+```
+
+## Histograms
+
+Histograms are a wonderful tool for tasks like checking the distribution of a given variable. In the example below, we are going to check the distribution of our Reaction Time variable. Given our simulation code above, we should expect to see something like a lognormal or shifted-lognormal distribution (i.e., the gamma parameter we fed into the function).
+
+```{r}
+ggplot(data = data,
+       mapping = aes(x = RT)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") + 
+  labs(title = "Reaction Time Distributions by Group")
+```
+
+This looks just like we would expect! If we want, we can also use the *facet_wrap* argument to look at this distribution separately for each group in our data.
+
+```{r}
+ggplot(data = data,
+       mapping = aes(x = RT)) +
+  geom_histogram(binwidth = 0.05, fill = "steelblue", color = "white") + 
+  facet_wrap(~ group) +
+  labs(title = "Reaction Time Distributions by Group")
+```
+
+## Density Plots
+
+Density plots are very similar to histograms in function, but tend to be preferred for tasks like comparing overlapping group distributions.
+
+This method uses a kernel density estimate to show the "probability mass" of the data.
+
+```{r}
+ggplot(data = data, 
+       mapping = aes(x = RT, fill = group)) +
+  geom_density(alpha = 0.5) +  # Alpha is wanted here to help view overlap
+  labs(
+    title = "Performance Density by Experience Level",
+    x = "Reaction Time (s)",
+    y = "Density",
+    fill = "Group"
+  ) +
+  theme_minimal()
+```
+
+## QQ Plots
+
+Quantile-Quantile (QQ) plots are great diagnostic tools for checking whether or not a given variable is normally distributed. Consider a plot again looking at Reaction Time data:
+
+```{r}
+ggqqplot(data = data, x = "RT") + 
+  labs(title = "Normal Q-Q Plot for RT")
+```
+
+This is comparing the distribution of your data against a reference distribution (typically a normal distribution). This function also adds the 95% confidence interval band and a regression line in order to assess that normality.
+
+-   When the data resembles an S-shaped curve it indicates heavy tails (leptokurtic)
+
+-   When the data resembles a reverse S-shape, in indicates light tails (platykurtic).
+
+-   When the shape is concave/convex it suggests skewed data.
+
+    -   Concave, or both tails going above the regression line, indicates right-skewed data.
+
+    -   Convex, or both tails going below the regression line, indicates left-skewed data.
+
+In this simulation, our Reaction Time (RT) data is intentionally right-skewed to mirror real-world human performance. This results in the **concave curve** (where both tails trend above the regression line) seen in the plot. In a professional analysis pipeline, this visualization serves as a critical decision point:
+
+1.  **Data Transformation:** One could apply a log or inverse transformation to "pull in" the right tail and satisfy the normality assumptions of traditional linear models.
+
+2.  **Model Selection:** Alternatively, this is a clear indicator that we should move away from standard OLS Regression in favor of a framework—like a Generalized Linear Model (GLM) or a Gamma-distributed HLM—that allows the user to explicitly specify the distribution of the dependent variable
+
+## Box Plots
+
+Box plots are one tool that tend to be very nice for group comparisons.
+
+```{r}
+ggplot(data = data, 
+       mapping = aes(x = group, y = RT, fill = group)) + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1) + # Define color and shape of outliers
+  labs(title = "RT Differences Between Groups") +
+  theme_classic()
+```
+
+## Violin Plots
+
+Another way to visualize distributions like we see with the box plots is with the violin plot. However, instead of giving us boxes using quartile information, violin plots use data density to shape the distribution for each group on the X-axis.
+
+This can really be thought of as a vertical, mirrored density plot and tends to outperform the box plot once we start getting large amounts of data.
+
+```{r}
+ggplot(data = data, 
+       mapping = aes(x = group, y = RT, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  labs(
+    title = "Distribution of RT across Experience Groups",
+    subtitle = "Violin shapes represent data density; inner white boxes represent IQR",
+    x = "Group",
+    y = "Reaction Time (s)"
+  ) +
+  theme_classic() +
+  guides(fill = "none") # Removes the redundant legend
+```
+
+If we want, we can combine this with the boxplot so that we can view both simultaneously.
+
+```{r}
+ggplot(data = data, 
+       mapping = aes(x = group, y = RT, fill = group)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) + # Add a small boxplot inside
+  labs(
+    title = "Distribution of RT across Experience Groups",
+    subtitle = "Violin shapes represent data density; inner white boxes represent IQR",
+    x = "Group",
+    y = "Reaction Time (s)"
+  ) +
+  theme_classic() +
+  guides(fill = "none") # Removes the redundant legend
+```
+
+## Bar Plot
+
+Bar plots tend to do a good job visualizing summary information. We can also include things like standard errors of features to make sure we capture some aspects of the feature's distribution.
+
+```{r}
+# Summarizing the data
+barplot_data <- data %>% 
+  group_by(group) %>% 
+  summarize(
+    mean_rt = mean(RT, na.rm = TRUE),
+    sd_rt = sd(RT, na.rm = TRUE),
+    se_rt = sd_rt / sqrt(n())
+  )
+```
+
+```{r}
+ggplot(data = barplot_data, 
+       mapping = aes(x = group, y = mean_rt, fill = group)) + 
+  geom_bar(stat = 'identity', width = 0.6) + 
+  geom_errorbar(aes(ymin = mean_rt - se_rt, ymax = mean_rt + se_rt),
+                width = 0.2, linewidth = 1) +
+  labs(y = "Mean RT (s)", title = "Mean Performance with Standard Error")
+```
+
+## Correlation Matrices
+
+These are very hand for when we don't want to look at variables in isolation and instead want to examine their relationships with each other. Correlation tables are always nice to have, but can be painful to read at times. With a correlation matrix, we are using color on a continuous spectrum in order to convey the strength of the relationship, make it slightly easier to read at a glance compared to a table.
+
+the GGally package can show both simultaneously. The diagonal shows the distribution of the relationship. The left values show the regression plot for the correlation between those two variables and the right values give the actual correlation value.
+
+```{r}
+# Selecting only the numeric variables for the matrix
+quant_vars <- data %>%
+  select(RT, distance, Weapon_vel, Head_vel, STAIT, PCLM)
+
+# Generating the matrix
+ggpairs(quant_vars, 
+        lower = list(continuous = wrap("smooth", alpha = 0.3, size=0.1, color="blue")),
+        diag = list(continuous = "densityDiag")) +
+  theme_bw() +
+  labs(title = "Multivariate Relationship Matrix")
+```
+
+We can also use the `corrplot` package to represent these relationships. This will give a heatmap of the correlations. It is a cleaner and less crowded way to represent these compared to the above method.
+
+The `corrplot` heatmap is particularly useful for identifying **Multicollinearity**. If two predictors (like STAIT and PCLM) are too highly correlated (indicated by dark blue cells), including both in the same regression model could destabilize our results.
+
+```{r}
+# 1. Generate the numeric correlation matrix
+# We use use = "complete.obs" to handle any potential NAs
+cor_matrix <- data %>%
+  select(RT, distance, Weapon_vel, Head_vel, STAIT, PCLM) %>%
+  cor(use = "complete.obs")
+
+# 2. Plot the Heatmap
+# 'type = upper' keeps it clean by only showing the top half
+# 'order = hclust' automatically groups similar variables together
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper", 
+         order = "hclust", 
+         addCoef.col = "black", # Adds the correlation coefficient text
+         tl.col = "black",      # Text label color
+         diag = FALSE)          # Hide the diagonal (1.00 correlation with self)
+```
+
+As you can see, we get colors based on the strength of the correlation, as well as their numerical value in each cell.
+
+## Global Themes
+
+You have probably noticed that with almost every single visualization we have created, we have set a theme (e.g., theme_classic). One thing that can be done ahead of time is setting a global theme. This changes the default theme for the document so that these kinds of details are default across all visualizations you make.
+
+By using `theme_set()` , you ensure that every plot in a 50-page report has the exact same font size, alignment, and background style. This is a hallmark of reproducible research: if a journal requests a specific font or style, you change it in one line of code rather than editing dozens of individual plots.
+
+```{r}
+# Set the global theme for the entire document
+theme_set(theme_classic() + 
+          theme(text = element_text(size = 12),
+                plot.title = element_text(face = "bold", hjust = 0.5)))
+```
+
+```{r}
+# Now, a simple plot is already "publication-ready"
+ggplot(data = data,
+       mapping = aes(x = STAIT, y = RT)) +
+  geom_point(alpha = 0.4)  
+```
