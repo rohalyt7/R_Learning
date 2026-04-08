@@ -15,7 +15,7 @@ Unlike traditional tutorials using static datasets, this project emphasizes Data
 
 - **Custom Research Frameworks:** Advanced modules leverage custom-built functions to generate highly controlled, clustered, and hierarchical data. This allows for the testing of models against known ground truths before applying them to "noisy" real-world physiological streams.
 
-For the source code behind these custom simulation frameworks, see the Power Analysis Simulation Repository.
+For the source code behind these custom simulation frameworks, see the MultilevelPowerSim Repository.
 
 ## **Current Modules**
 **1. Data Manipulation & Basic Simulation**
