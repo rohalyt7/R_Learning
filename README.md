@@ -39,6 +39,7 @@ A comprehensive suite for verifying the mathematical foundations of linear model
 
 ## Roadmap
 - **Inference:** T-tests and ANOVA within the Tidyverse framework.
+- **Regression Modeling Suite:** Simple/Multiple linear, Quadratic, and Logistic models, with a focus on robust estimation methods.
 - **Multilevel Modeling:** Linear Mixed-Effects Models (LMMs) for clustered/longitudinal data.
 - **Bayesian Frameworks:** Transitioning to brms for robust hierarchical modeling.
 - **Bio-Signal ETL:** Specialized pipelines for handling missing data and sensor "dropouts" in wearable research.
