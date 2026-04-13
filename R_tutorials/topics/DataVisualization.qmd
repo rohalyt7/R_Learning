@@ -25,6 +25,11 @@ library(simstudy)
 library(ggpubr)
 library(GGally)
 library(corrplot)
+library(here)
+```
+
+```{r, warning=FALSE}
+source(here("source", "Data_Simulation.R"))
 ```
 
 # Simulating Data
@@ -36,56 +41,74 @@ library(corrplot)
 ```{r}
 set.seed(222)
 
-# 1. Psych Data
-defP <- defData(varname = "STAIT", formula = "50", variance = 225, dist = "normal") #Mean 50, SD = 15
-defP <- defData(defP, varname = "PCL", formula = "30", variance = 100, dist = "normal")
-defP <- defData(defP, varname = "group", formula = "0.5", dist = "binary") #0, 1 grouping
-
-psych_data <- genData(30, defP) %>% 
-  mutate(group = ifelse(group == 0, "Non-Experienced", "Experienced")) %>% 
-  rename("ID" = 'id')
-
-# View the first few rows
-head(psych_data)
-```
-
-```{r}
-# 2. Behavioral Data
-# Create a blank data frame with 30 subjects
-behavioral_base <- genData(30)
-
-# Expand to 50 trials per subject.
-behavioral_long <- addPeriods(behavioral_base,
-                              nPeriods = 50,
-                              idvars = "id")
-
-# Now we define the repeated measures
-defR <- defDataAdd(varname = "distance", formula = 250, variance = 5000, dist = "normal")
-defR <- defDataAdd(defR, varname = "Weapon_vel", formula = 5, variance = 1, dist = "normal")
-defR <- defDataAdd(defR, varname = "Head_vel", formula = 6, variance = 1.4, dist = "normal")
-defR <- defDataAdd(defR, varname = "RT", formula = 0.5, variance = 0.2, dist = "gamma") # Skewed RT
-defR <- defDataAdd(defR, varname = "Shots", formula = 2.5, dist = "poisson")
-defR <- defDataAdd(defR, varname = "Occlusion", formula = 20, variance = 100, dist = "normal")
-defR <- defDataAdd(defR, varname = "Type", formula = 0.5, dist = "binary")
-
-# Use addColumns to fill in the data frame
-behavioral_data <- addColumns(defR, behavioral_long) %>% 
-  rename(ID = id,
-         Time = period,
-         Row_num = timeID)
-
-# View the first few rows
-head(behavioral_data)
-```
-
-```{r}
-data <- behavioral_data %>% 
-  left_join(psych_data, by = ('ID'))
+data <- generate_data(subj_n = 30,  # How many people we want
+                      trial_n = 50, # Number of repeated measures
+                      ICC = 0.2)    # ICC value for the dataset
+head(data)
 ```
 
 # Data Visualization
 
-**Note on Logic:** `ggplot2` works by stacking layers. We start with the **Data**, map variables to **Aesthetics** (like x, y, or color) , and then add **Geometries** (like points, lines, or bars). This modular approach allows us to build complex visualizations one piece at a time.
+Before we start plotting our research data, we need to understand the "Logic of the Layer." Unlike base R plotting, **ggplot2** treats every graph like a cake: you start with a base and stack different layers on top of one another to build whatever type of plot you would like.
+
+## **The 3 Essential Layers**
+
+To create any plot in ggplot2, you must provide three things:
+
+1.  **Data:** The dataframe containing your variables.
+
+2.  **Aesthetics (`aes`):** The "mapping" layer. This tells R which variable goes on the X-axis, which goes on the Y-axis, and if you want to use colors or shapes to represent different groups.
+
+3.  **Geometries (`geom`):** The "visual" layer. This tells R *how* to draw the data (e.g., as points, lines, or bars).
+
+## **How the Code is Structured**
+
+The "Grammar" uses the plus sign (`+`) to connect layers. Think of the `+` as saying **"and then..."**
+
+```{r}
+# 1. Initialize the plot (The Blank Canvas)
+ggplot(data = data, mapping = aes(x = distance, y = RT)) +
+  
+# 2. Add the geometric layer (The Data Points)
+  geom_point() +
+  
+# 3. Add a trend line layer (The Statistical Layer)
+  geom_smooth(method = "lm")
+```
+
+Note that both the specification of the data and the aesthetics are captured within the ggplot function and then adding other layers like the geoms require the "+" notation to be used.
+
+## **The Building Blocks of a Graph**
+
+To make a graph publication-ready, we often add these additional layers:
+
+|  |  |  |
+|----|----|----|
+| **Layer** | **Function** | **Purpose** |
+| **Facets** | `facet_wrap()` | Splits one plot into multiple small plots based on a category (e.g., one for "Experienced", one for "Non-Experienced"). |
+| **Labels** | `labs()` | Adds titles, subtitles, and clean axis names. |
+| **Themes** | `theme_minimal()` | Changes the overall "look" (background color, grid lines, fonts). |
+| **Scales** | `scale_color_manual()` | Gives you manual control over the colors and axis limits. |
+
+## **Why this matters for our Psych Data**
+
+Because our data is "Long Format" (multiple trials per participant), ggplot2 is the perfect tool. It allows us to:
+
+-   **Color-code** by Participant ID.
+
+-   **Facet** by Group (Experienced vs. Non-Experienced).
+
+-   **Overlay** individual trial points with a summary trend line.
+
+### **Student Exercise: The "Blank Canvas"**
+
+Try running just the first line of the code below:
+
+```{r}
+ggplot(data = data, aes(x = distance, y = RT))
+```
+
+Notice how R creates a coordinate system but doesn't draw anything? That’s because we haven't added a **Geom** yet! Now that we have these basics in mind of how ggplot2 works, let's start looking at different types of graphs and different layers/arguments you can provide to generate the visualization you want.
 
 ## Basic Scatter Plot
 
