@@ -1,0 +1,353 @@
+---
+title: "Comparing Groups"
+author: "Thomas Rohaly"
+format: html
+editor: visual
+---
+
+# Introduction
+
+-   **Group Comparisons in Focus:** In research, we frequently need to conduct group comparisons to evaluate whether different experimental manipulations or environmental conditions are effective compared to each other or a baseline.
+
+<!-- -->
+
+-   **The OLS Framework:** Ordinary Least Squares (OLS) regression provides a highly robust family of models to answer these questions using **T-tests** and **Analysis of Variance (ANOVA)** methodologies.
+
+-   **T-Tests (2 Means):** T-tests are ideal when you want to compare a single sample mean to a known population mean (One-Sample), or compare two independent groups to each other (Independent-Samples).
+
+    > *Note: While t-tests can also compare two timepoints for the same individuals (Paired-Samples), this notebook will focus strictly on between-subjects designs. Within-subjects designs will be covered in a later module.*
+
+-   **ANOVAs (3+ Means):** ANOVAs answer functionally identical questions but scale up to scenarios where **three or more** groups or conditions are being compared. This methodology strictly requires a continuous outcome variable and categorical predictors.
+
+-   **ANOVA *is* Regression:** It is foundational to recognize that ANOVA is not a distinct statistical math; it is simply a specialized formulation of multiple linear regression. While ANOVAs traditionally emphasize the partitioning of variance into between-group and within-group buckets, the underlying mathematics of OLS regression and ANOVA are identical.
+
+-   **What This Notebook Covers:** This tutorial provides a code-first workflow for executing T-tests and ANOVAs in R. We will walk through data visualization strategies, model execution, and elegant post-hoc decomposition using estimated marginal means (`emmeans`). Finally, we will cover the specific non-parametric pivots required when underlying OLS assumptions (like normality) are violated.
+
+# Load Packages
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(here)
+library(car)
+library(Hmisc)
+library(emmeans) # For Post-hocs
+library(ggplot2)
+```
+
+```{r, warning=FALSE}
+source(here("source", "Data_Simulation.R"))
+```
+
+# Simulating Data
+
+```{r}
+set.seed(222)
+
+data <- generate_betsub_data(subj_n = 100)
+head(data)
+```
+
+# **Visualizing Relationships**
+
+Before diving into the mathematical framework of T-tests and ANOVAs, we must visually inspect our data. When analyzing an outcome variable alongside two categorical predictors (e.g., Sleep Quality and Experience Group) and one continuous outcome (STAIT), visual exploration allows us to check for two distinct patterns: **Main Effects** and **Interactions**.
+
+## **The "Interaction" Boxplot**
+
+By mapping `sleep` to the x-axis and `group` to the `fill` color, we can easily evaluate whether our groups behave differently across the three sleep categories.
+
+```{r}
+ggplot(data, aes(x = sleep, y = STAIT, fill = group)) +
+  # Use a boxplot to see the median and quartiles
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) + 
+  # Overlay jittered points to see the individual "Subject" distributions
+  geom_jitter(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75), 
+              alpha = 0.3, size = 1.5) +
+  theme_minimal() +
+  scale_fill_manual(values = c("deepskyblue", "goldenrod")) +
+  labs(title = "Anxiety Scores (STAIT) Across Study Sessions",
+       subtitle = "Comparison by Experience Level",
+       x = "Sleep Category",
+       y = "STAIT Score",
+       fill = "Experience Level")
+```
+
+### **What are we looking for?**
+
+-   **Main Effect of Sleep:** Do the box pairs collectively shift up or down across the x-axis? *(e.g., Does an individual's sleep quality independently impact their anxiety score, regardless of experience level?)*
+
+-   **Main Effect of Group:** Is one fill color consistently higher or lower than the other across all levels of sleep?
+
+-   **Interaction Effect:** Does the *gap* between the two colors change depending on where you look on the x-axis? For example, if the Non-Experienced group displays a massive spike in anxiety scores compared to the Experienced group *specifically* when sleep is "Bad," but the groups look identical when sleep is "Good," you are looking at an **Interaction Effect**.
+
+## **The "Mean-Line" Plot**
+
+While boxplots are excellent for displaying **"Noise"** (variance, distributions, and outliers), a **Mean-Line Plot** isolates the **"Signal"** of an interaction by stripping away individual data points and focusing purely on group means. This mirrors the formal interaction plots we will generate later in our ANOVA models.
+
+```{r}
+ggplot(data, aes(x = sleep, y = STAIT, color = group, group = group)) +
+  # Calculate and plot the mean for each cell
+  stat_summary(fun = mean, geom = "point", size = 4) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1.2) +
+  # Add error bars (95% Confidence Intervals)
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.1) +
+  theme_classic() +
+  labs(title = "Mean STAIT Scores with 95% CI",
+       x = "Sleep Cateogory",
+       y = "Mean STAIT Score")
+```
+
+**Visual Inference:** Based on this visualization we might see a group difference when sleep quality is bad. However, chances of seeing significant differences at either of the other levels of sleep quality look unlikely.
+
+# T-tests
+
+## One-Sample T-test
+
+The one-sample t-test is the most foundational directional test. It allows you to evaluate whether the mean of a single sample significantly differs from a known "ground truth" value. This ground truth value ($\mu$) is typically represented by a established population norm, a theoretical baseline, or a gold standard.
+
+To execute this test in R, we pass our continuous variable to the `t.test()` function and define our comparison baseline using the `mu` argument.
+
+```{r}
+t.test(data$STAIT, mu = 45)
+```
+
+### **Core Output Parameters**
+
+-   **`t` (t-value):** This represents the calculated signal-to-noise ratio—the magnitude of the observed difference divided by the standard error of the sample data. A larger absolute value indicates that the observed difference is large relative to the variation in the data.
+
+-   **`df` (Degrees of Freedom):** For a one-sample t-test, $df = n - 1$ (where $n$ is the total sample size). It represents the number of independent observations in the dataset that are free to vary while still satisfying the mathematical constraints of the sample mean.
+
+-   **`p-value`:** By convention, an alpha threshold of $0.05$ is utilized. A $p$-value *less* than $0.05$ leads us to reject the null hypothesis, indicating that the observed difference between our sample mean and the population norm is highly unlikely to have occurred by random chance alone (deeming it "statistically significant"). Conversely, a $p$-value *greater* than $0.05$ indicates insufficient evidence to conclude the means are different.
+
+## **Independent-Samples T-Test (Two-Sample T-Test)**
+
+An independent-samples t-test compares the means of two completely unrelated, distinct groups to evaluate whether their broader population means differ. This model strictly requires a continuous outcome variable (dependent variable) and a categorical predictor (independent variable) with exactly two levels.
+
+Instead of comparing our sample mean against an arbitrary population constant, we use standard R formula notation (`Outcome ~ Predictor`) within the `t.test()` function to see if the `STAIT` score for our Non-Experienced group differs from the `STAIT` score of our Experienced group.
+
+```{r}
+# We will use standard formula notation to specify the model
+ind_test <-  t.test(STAIT ~ group, data = data)
+
+# Printing the results
+ind_test
+```
+
+# Analysis of Variance (ANOVA)
+
+ANOVA is a powerful family of statistical methods that, similar in practice to $t$-tests, evaluates differences between group means. However, while $t$-tests are limited to comparing exactly two groups, an ANOVA scales elegantly to handle **two or more** groups simultaneously.
+
+Specifically, an ANOVA operates by **partitioning variance**—it separates the total variation found in your data into two distinct buckets:
+
+1.  **Between-Group Variance:** Variation driven by the group memberships or experimental manipulations (the "Signal").
+
+2.  **Within-Group Variance (Residuals/Error):** Random individual variations found within those groups (the "Noise").
+
+If the between-group variance is substantially larger than the within-group variance, it provides statistical evidence that the group population means are truly different from one another. This methodology requires a continuous outcome variable and categorical predictors.
+
+## One-Way ANOVA
+
+A One-Way ANOVA examines the effect of a single categorical factor (e.g., Sleep Quality) on a continuous outcome variable (`STAIT`).
+
+-   **Example Research Question:** Does an individual's sleep quality significantly influence their reported anxiety levels?
+
+To fit this model in R, we use the core `aov()` function.
+
+```{r}
+# Similar to t.test, we will specify the formula and identify the dataset.
+res_aov1 <- aov(STAIT ~ sleep, data = data)
+
+# Viewing the ANOVA table
+summary(res_aov1)
+```
+
+### **Interpreting the ANOVA Summary Table**
+
+-   **`Df` (Degrees of Freedom):** For the predictor (`sleep`), $Df = k - 1$ (where $k$ is the number of groups). For the `Residuals`, $Df = n - k$ (where $n$ is the total sample size).
+
+-   **`Sum Sq` (Sum of Squares):** Indicates the absolute amount of variance relative to the grand mean that is partitioned into your predictor variable versus the model residuals.
+
+-   **`Mean Sq` (Mean Square):** Calculated as $\frac{\text{Sum of Squares}}{Df}$. This provides an unbiased estimate of the variance for both between-group changes and within-group error.
+
+-   **`F value` (**$F$-ratio): This is your core test statistic, calculated as the ratio between your two mean square values:
+
+    $\text{F} = \frac{MS_{\text{between}}}{MS_{\text{within}}}$
+
+    An $F$-value close to $1.0$ suggests the variation between groups is no larger than random background noise. A large $F$-value indicates that the variance between group means is substantially greater than the variance within the groups, signaling a real treatment effect.
+
+-   **`Pr(>F)` (**$p$-value): Interpreted as the probability of observing an $F$-statistic this large (or larger) under the assumption that the null hypothesis is completely true. If $p < 0.05$, we conclude that at least one group mean significantly differs from the others.
+
+## Two-Way ANOVA (Factorial ANOVA)
+
+In a Factorial ANOVA, we evaluate the effects of **two categorical predictors simultaneously**: Sleep Quality and Experience Group. This approach allows us to isolate both the independent **"Main Effect"** of each predictor as well as a potential **"Interaction Effect"** between them.
+
+-   **Example Research Question:** Does the relationship between sleep quality and reported anxiety levels change depending on an individual's experience group?
+
+In R formula notation, utilizing an asterisk (`*`) automatically includes both individual main effects and their resulting interaction term.
+
+```{r}
+# We will use the same function as above
+# we will use the * in the formula to specify the main effects and the interaction between the two predictors.
+res_aov2 <- aov(STAIT ~ sleep * group, data=data)
+
+summary(res_aov2)
+```
+
+### **Evaluating Main Effects vs. Interactions**
+
+The output table allows us to independently evaluate each row for statistical significance:
+
+1.  **Main Effect of `sleep`:** Does anxiety vary by sleep quality, averaging across experience levels?
+
+2.  **Main Effect of `group`:** Does anxiety vary by experience level, averaging across sleep quality?
+
+3.  **Interaction Effect (`sleep:group`):** If this term is statistically significant ($p < 0.05$), it tells us that the impact of sleep quality on anxiety is structurally **different** depending on which experience group the individual belongs to.
+
+> **Next Step:** When an omnibus test (a main effect or an interaction) is significant, looking at the summary table alone is not enough. We must deploy **post-hoc analysis** and visualization to isolate exactly where the group differences lie. However, *how* we approach these post-hocs depends entirely on what was flagged as significant.
+
+## **Post Hoc Testing**
+
+When a Factorial ANOVA reveals a significant main effect or interaction effect, these are considered **"Omnibus" tests**. An omnibus test acts as a gatekeeper: it tells you that a statistically significant difference exists *somewhere* among your groups, but it cannot pinpoint which specific pairs or experimental conditions are driving that difference. To parse apart these specific differences without artificially inflating our false positive rate, we must execute **Post-Hoc (pairwise) tests** based on the following rules:
+
+-   **For Main Effects with 3+ Levels:** If a multi-level main effect like `sleep` (Bad, Okay, Good) is significant, you *must* run post-hoc pairwise comparisons to determine which specific categories differ from one another (e.g., is Bad different from Okay, or just from Good?).
+
+-   **For Main Effects with exactly 2 Levels:** If a two-level main effect like `group` (Experienced vs. Non-Experienced) is significant, you do **not** need a post-hoc test. Because there are only two groups, the omnibus test has already isolated the exact source of the difference.
+
+-   **For Interaction Effects:** If the interaction is significant, the main effects become secondary or even misleading to look at in isolation. You *must* run post-hoc tests (such as simple effects or interaction contrasts) to map out how the effect of one variable changes across the levels of the other.
+
+## **The Traditional Route: Tukey's HSD**
+
+One classic choice for post-hoc analysis is **Tukey’s Honestly Significant Difference (HSD)** test. Tukey's HSD automatically controls your family-wise error rate when conducting all possible pairwise comparisons.
+
+In base R, this test can be executed by passing your saved ANOVA object directly to the `TukeyHSD()` function.
+
+```{r}
+# Tukey's HSD
+TukeyHSD(res_aov2)
+```
+
+Tukey's HSD takes a brute-force approach. As you can see when running this code, for the interaction effect, **every single possible combination** of sleep-quality and experience group levels is iterated through. R runs a significance test on every pairing to assess where a significant mean difference might lie.
+
+## **Estimated Marginal Means (`emmeans`)**
+
+A more flexible and modern approach is to utilize the **`emmeans` (Estimated Marginal Means)** package. Rather than relying purely on raw arithmetic averages, `emmeans` calculates group means **based on your statistical model**. This accounts for group imbalances and gives a much fairer, adjusted representation of what a "typical" person in a given category looks like.
+
+Furthermore, `emmeans` gives you precise control over your post-hoc strategy, allowing you to choose between evaluating **Simple Effects** or **Interaction Contrasts**.
+
+### **1. Isolating Simple Effects (Within-Group Comparisons)**
+
+By utilizing a conditional pipe operator (`~ sleep | group`), we tell R to isolate its pairwise comparisons *within* each specific group. This prevents the messy "compare everything to everything" table generated by Tukey's HSD.
+
+```{r}
+# 1. Calculate estimated means for the interaction effect
+marginal_means <- emmeans(res_aov2, ~ sleep | group)
+
+# 2. Run the pairwise comparisons.
+# You can add an adjustement (adj = tukey)
+# Other options include Bonferroni, Scheffe, or Sidak
+as.data.frame(pairs(marginal_means, adj = 'scheffe'))
+```
+
+**What this shows:** By default, the `pairs()` function here yields the **Simple Effects** of the post-hoc test. It will show you how sleep levels compare *only* within the Non-Experienced cohort, and then *only* within the Experienced cohort.
+
+### **2. Extracting Interaction Contrasts (The Difference of Differences)**
+
+If your core research question requires analyzing the interaction directly—asking if the *gap* or change between sleep categories is significantly different between the two experience levels—you need an **Interaction Contrast**.
+
+To do this, we generate a "flat" reference grid using a plus sign (`+`) instead of a pipe, and use the `contrast()` function to test the interaction components directly.
+
+```{r}
+# 1. Creat a flat grid to make sure there is no nesting. (Using + instead of |)
+flat_grid <- emmeans(res_aov2, ~ sleep + group)
+
+# 2. Run interaction contrast
+# Looks at the Difference of Differences
+int_table <- contrast(flat_grid, interaction = list(
+  sleep = 'pairwise',
+  group = 'pairwise'
+))
+
+# 3. Convert and veiew results
+as.data.frame(summary(int_table, adjust = 'sidak'))
+```
+
+### **How to Read the Interaction Contrast Table**
+
+Instead of separate tables for each group, the output displays unified rows combining your factors, formatted like:
+
+`Bad - Okay : (Non-Experienced) - Experienced`
+
+The **Estimate** column in this row represents the literal difference between your two simple effects slopes. If the adjusted $p$-value in this table is less than $0.05$, you have direct statistical confirmation that the interaction pattern observed in your visualizations is real and meaningful. For example, up above we have a $p < 0.05$ (0.0077) for the Bad - Good pairwise comparison between the Non-Experienced and Experienced groups. The table indicates that the estimated difference in STAIT scores between Bad and Good sleep quality for the Non-Experienced group is 24.93 greater compared to the Experienced group.
+
+## Visualizing Interaction Effects
+
+```{r}
+# Using the 'interaction' plot logic
+ggplot(data, aes(x = sleep, y = STAIT, color = group, group = group)) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(fun.data = mean_cl_normal, geom = "errorbar", width = 0.1) +
+  theme_classic() +
+  # Manually assign colors to match your boxplot palette
+  scale_color_manual(values = c("deepskyblue", "goldenrod")) +
+  labs(title = "Interaction Effect of Sleep and Experience on Anxiety",
+       x = "Sleep Category",
+       y = "Mean STAIT Score (95% CI)",
+       color = "Experience Level")
+```
+
+# **When OLS Fails**
+
+Up to this point, our **T-tests** and **ANOVAs** have relied on the clean, mathematical assumptions of **Ordinary Least Squares (OLS)** regression. Specifically, these models assume that your data is **Normally Distributed** within each group and that your groups share an **Equal Variance (Homoscedasticity)**.
+
+However, real-world data is rarely perfect. If you are modeling highly skewed outcomes (like reaction times) or if one of your groups is wildly more variable than another, standard OLS test statistics and $p$-values can become highly inaccurate.
+
+When your data fails formal assumption checks—whether through visual inspection (like Q-Q plots) or statistical tests (like Shapiro-Wilk or Levene's)—you have two primary alternative pathways: **Adjust the mathematics (Welch's Correction)** or **Transform the data structure (Non-Parametric Rank Tests)**.
+
+## **Pathway A: Addressing Inequality of Variance (Welch's Correction)**
+
+When your groups display drastically different spreads of variance (**Heteroscedasticity**), a standard ANOVA can artificially inflate your false-positive rate.
+
+### **The Solution: Welch's ANOVA**
+
+Welch's ANOVA completely removes the assumption of equal variances. It accommodates the unequal spreads by mathematically adjusting the model's degrees of freedom downward to penalize the variance imbalance, resulting in a more conservative and accurate $p$-value.
+
+In R, a Welch's ANOVA is executed using the `oneway.test()` function with the `var.equal = FALSE` argument.
+
+```{r}
+welch_anova <- oneway.test(STAIT ~ sleep, data = data, var.equal = FALSE)
+print(welch_anova)
+```
+
+**A Modern Best Practice:** Many contemporary researchers choose to **default** to Welch's variations from the very beginning (using `t.test()` and `oneway.test(..., var.equal = FALSE)` without running a standard ANOVA). This is because Welch's tests perform identically to traditional Student's tests if the variances happen to be equal, but automatically protect your model if they are not.
+
+## **Pathway B: Addressing Extreme Skew and Outliers (Non-Parametric Tests)**
+
+When your data is severely non-normal or contains extreme outliers, calculating an arithmetic **Mean** no longer provides an accurate baseline for the "center" of your data distribution.
+
+### **The Solution: Rank-Based Tests**
+
+Non-parametric alternatives handle non-normality by converting your raw, continuous values into ordered **ranks** (1st place, 2nd place, 3rd place, etc.). The analysis then evaluates the **Medians** of these ranks rather than the mathematical means. This structural transformation completely strips away the distorting influence of heavy tail skew and extreme outliers.
+
+|  |  |  |
+|------------------------|------------------------|------------------------|
+| **Standard Parametric Test (Mean-Based)** | **Non-Parametric Alternative (Rank-Based)** | **Core R Function** |
+| Independent Samples T-Test | **Mann-Whitney U / Wilcoxon Rank-Sum Test** | `wilcox.test()` |
+| One-Way ANOVA | **Kruskal-Wallis Test** | `kruskal.test()` |
+
+### **1. Executing the Mann-Whitney U / Wilcoxon Rank-Sum Test**
+
+Use this non-parametric workflow when you want to compare exactly two independent groups but cannot assume normality.
+
+```{r}
+non_param_aov1 <- wilcox.test(STAIT ~ group, data = data)
+print(non_param_aov1)
+```
+
+## **2. Executing the Kruskal-Wallis Test**
+
+Use this non-parametric workflow as your alternative to a One-Way ANOVA when comparing three or more groups with non-normal distributions.
+
+```{r}
+non_param_aov2 <- kruskal.test(STAIT ~ sleep, data = data)
+print(non_param_aov2)
+```
