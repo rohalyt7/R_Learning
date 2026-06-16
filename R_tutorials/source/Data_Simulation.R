@@ -563,3 +563,60 @@ generate_data <- function(subj_n = 30, trial_n = 50, ICC = 0.2) {
   
   return(data)
 }
+
+generate_betsub_data <- function(subj_n = 60) {
+  
+  # 1. Define predictors (Must include all variables for the matrix)
+  subject_preds <- list(
+    STAIT = list(type = "normal", mean = 50, sd = 15),
+    PCL   = list(type = "normal", mean = 30, sd = 10),
+    group = list(type = "binary", prob = 0.5),
+    sleep = list(type = "categorical", probs = c(Bad = 0.33, Okay = 0.33, Good = 0.34))
+  )
+  
+  # 2. Initial simulation
+  data <- simulate_data(n = subj_n, betas = rep(0, 6), predictors = subject_preds)$data %>%
+    dplyr::rename(ID = row_id) %>%
+    mutate(
+      group = factor(group, labels = c("Non-Experienced", "Experienced")),
+      sleep = factor(sleep, levels = c("Bad", "Okay", "Good"))
+    ) %>% 
+    dplyr::select(-Y) # Dropping the Y plaeholder
+  
+  # 3. Create the 'Base_Speed_Factor' (Subject baseline)
+  # Ensure the name here matches what you use in add_correlation below
+  data$Base_Speed_Factor <- rnorm(subj_n, 1, 0.1) 
+  
+  # 4. Define Correlation Matrix (4x4)
+  # Order: STAIT, PCL, Base_Speed_Factor, and we'll add group as a numeric placeholder
+  # Note: It's better to correlate continuous vars. Let's do STAIT, PCL, and Speed.
+  cor_mat_subj <- matrix(c(1.0, 0.95, 0.3,
+                           0.95, 1.0, 0.2,
+                           0.3, 0.2, 1.0), nrow = 3)
+  
+  # 5. Inject correlations (Column names must exist in 'data')
+  data <- add_correlation(data, 
+                          predictors = c("STAIT", "PCL", "Base_Speed_Factor"), 
+                          cor_matrix = cor_mat_subj)
+  # 6. Add relationships to variables to ensure significant relationships
+  data <- data %>% 
+    mutate(
+      STAIT = case_when(
+        group == "Non-Experienced" & sleep == "Bad" ~ STAIT + 15,
+        group == "Non-Experienced" & sleep == "Okay" ~ STAIT + 5,
+        group == "Non-Experienced" & sleep == "Good" ~ STAIT - 5,
+        
+        group == "Non-Experienced" & sleep == "Bad" ~ STAIT - 2,
+        group == "Non-Experienced" & sleep == "Bad" ~ STAIT - 4,
+        group == "Non-Experienced" & sleep == "Bad" ~ STAIT - 6,
+        TRUE ~ STAIT
+      ),
+      STAIT = STAIT + rnorm(n(), 0, 2) #Adding some jitter
+      #to this variable as would naturally be expected
+    )
+  
+  return(data)
+}
+
+
+  
